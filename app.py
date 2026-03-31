@@ -9,7 +9,7 @@ import re
 st.set_page_config(page_title="楽天レビュー完全収集ツール", page_icon="📊")
 
 st.title("📊 楽天レビュー完全収集ツール")
-st.write("楽天の「レビュー一覧ページURL」を入力してください。新システムに対応した超強力版です！")
+st.write("楽天の「レビュー一覧ページURL」を入力してください。無限ループを防止する賢いツールです！")
 
 # Step 1: URLを入力する枠
 input_url = st.text_input("ここにURLを貼り付けてください", placeholder="https://review.rakuten.co.jp/item/1/...")
@@ -36,10 +36,11 @@ if st.button("データ収集開始"):
                 st.stop()
 
             # ==========================================
-            # データ収集処理（最新の楽天HTML構造に完全対応！）
+            # データ収集処理（ループ防止機能付き）
             # ==========================================
             reviews = []
-            max_pages = 50 # 最大50ページ（750件）まで自動で進む
+            seen_texts = set() # 重複をチェックするための「記憶メモリ」
+            max_pages = 50 
             
             progress_bar = st.progress(0)
             status_text = st.empty()
@@ -52,32 +53,30 @@ if st.button("データ収集開始"):
                     res_p = requests.get(page_url, headers=headers)
                     soup_p = BeautifulSoup(res_p.content, "html.parser")
                     
-                    # 新しい楽天のレビュー1件ごとのブロックを探す
-                    # ※ <li> タグの中にレビュー情報が入っている構造になっています
                     review_blocks = soup_p.find_all('li')
-                    
-                    # 今回のページから取得できた件数（0なら終了）
-                    current_page_reviews = 0
+                    new_reviews_count = 0 # このページで新しく見つけた件数
                     
                     for block in review_blocks:
-                        # 1. レビュー本文を探す（いただいたHTMLの新クラス名）
                         body_element = block.find(class_=["review-body--LpVR4", "no-ellipsis--2jV9-"])
                         
                         if body_element:
                             text = body_element.get_text(separator='\n', strip=True)
                             
-                            # 2. ショップのコメントもついでに探す
-                            shop_comment_element = block.find(class_="shop-comment-body--3WU17")
-                            shop_comment = shop_comment_element.get_text(separator='\n', strip=True) if shop_comment_element else ""
-                            
-                            reviews.append({
-                                "レビュー本文": text,
-                                "ショップからのコメント": shop_comment
-                            })
-                            current_page_reviews += 1
+                            # ★ここで重複チェック！まだ見たことのない文章だけを保存する
+                            if text and text not in seen_texts:
+                                seen_texts.add(text) # 記憶に保存
+                                
+                                shop_comment_element = block.find(class_="shop-comment-body--3WU17")
+                                shop_comment = shop_comment_element.get_text(separator='\n', strip=True) if shop_comment_element else ""
+                                
+                                reviews.append({
+                                    "レビュー本文": text,
+                                    "ショップからのコメント": shop_comment
+                                })
+                                new_reviews_count += 1
 
-                    # ページにレビューが1件も無くなったら、最後のページまで到達したと判断して終了！
-                    if current_page_reviews == 0:
+                    # もし「新しいレビュー」が1件も無かったら、楽天のループ罠にハマったと判断して終了！
+                    if new_reviews_count == 0:
                         break
                             
                 except Exception as e:
@@ -95,7 +94,7 @@ if st.button("データ収集開始"):
                 df = pd.DataFrame(reviews)
                 df.index = df.index + 1
                 
-                status_text.text(f"🎉 大成功です！！ 計 {len(df)} 件のデータを収集しました！！")
+                status_text.text(f"🎉 大成功です！！ 重複を除外し、計 {len(df)} 件のデータを収集しました！！")
                 st.dataframe(df)
                 
                 csv = df.to_csv().encode('utf-8-sig')
@@ -107,7 +106,7 @@ if st.button("データ収集開始"):
                     mime="text/csv"
                 )
             else:
-                st.warning("😢 ページにはアクセスできましたが、レビューの文章が見つかりませんでした。（楽天の仕様がまた変更された可能性があります）")
+                st.warning("😢 ページにはアクセスできましたが、レビューの文章が見つかりませんでした。")
 
         except Exception as e:
             st.error(f"❌ 予期せぬエラーが発生しました: {e}")

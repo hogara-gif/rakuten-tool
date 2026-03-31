@@ -6,10 +6,10 @@ import time
 import re
 
 # ページの設定
-st.set_page_config(page_title="楽天レビュー完全収集ツール", page_icon="📊")
+st.set_page_config(page_title="楽天レビュー完全収集ツール", page_icon="📊", layout="wide")
 
 st.title("📊 楽天レビュー完全収集ツール")
-st.write("楽天の「レビュー一覧ページURL」を入力してください。無限ループを防止する賢いツールです！")
+st.write("楽天の「レビュー一覧ページURL」を入力してください。「新着順」で全件根こそぎ取得します！")
 
 # Step 1: URLを入力する枠
 input_url = st.text_input("ここにURLを貼り付けてください", placeholder="https://review.rakuten.co.jp/item/1/...")
@@ -26,7 +26,7 @@ if st.button("データ収集開始"):
         try:
             review_url_base = None
 
-            # URLからベース部分を抽出
+            # URLからショップIDとアイテムIDのベース部分を抽出
             match = re.search(r'(https://review\.rakuten\.co\.jp/item/1/\d+_\d+)', input_url)
             if match:
                 review_url_base = match.group(1)
@@ -36,17 +36,18 @@ if st.button("データ収集開始"):
                 st.stop()
 
             # ==========================================
-            # データ収集処理（ループ防止機能付き）
+            # データ収集処理（強制『新着順（6）』で全件取得！）
             # ==========================================
             reviews = []
-            seen_texts = set() # 重複をチェックするための「記憶メモリ」
+            seen_reviews = set() # 重複チェック用メモリ
             max_pages = 50 
             
             progress_bar = st.progress(0)
             status_text = st.empty()
 
             for page in range(1, max_pages + 1):
-                page_url = f"{review_url_base}/1.{page}/"
+                # 💡【最大のポイント】最初の数字を「6」にすることで「新着順」になり、隠されたレビューも全て表示されます
+                page_url = f"{review_url_base}/6.{page}/"
                 status_text.text(f"🏃‍♂️ データ収集進行中... ページ {page} を探索中 (現在 {len(reviews)}件 取得済)")
                 
                 try:
@@ -54,28 +55,54 @@ if st.button("データ収集開始"):
                     soup_p = BeautifulSoup(res_p.content, "html.parser")
                     
                     review_blocks = soup_p.find_all('li')
-                    new_reviews_count = 0 # このページで新しく見つけた件数
+                    new_reviews_count = 0
                     
                     for block in review_blocks:
-                        body_element = block.find(class_=["review-body--LpVR4", "no-ellipsis--2jV9-"])
-                        
-                        if body_element:
-                            text = body_element.get_text(separator='\n', strip=True)
+                        # レビューのヘッダー（日付や星がある場所）を探す
+                        header_element = block.find(class_="header--1B1vT")
+                        if not header_element:
+                            continue # ヘッダーがないliタグはレビューではないのでスキップ
                             
-                            # ★ここで重複チェック！まだ見たことのない文章だけを保存する
-                            if text and text not in seen_texts:
-                                seen_texts.add(text) # 記憶に保存
-                                
-                                shop_comment_element = block.find(class_="shop-comment-body--3WU17")
-                                shop_comment = shop_comment_element.get_text(separator='\n', strip=True) if shop_comment_element else ""
-                                
-                                reviews.append({
-                                    "レビュー本文": text,
-                                    "ショップからのコメント": shop_comment
-                                })
-                                new_reviews_count += 1
+                        # 1. 評価（星の数）
+                        rating_el = header_element.find("span", class_=re.compile("font-fixed"))
+                        rating = rating_el.get_text(strip=True) if rating_el else ""
+                        
+                        # 2. 投稿日
+                        date_el = header_element.find(string=re.compile(r'\d{4}/\d{2}/\d{2}'))
+                        date = date_el.strip() if date_el else ""
+                        
+                        # 3. 投稿者名
+                        name_el = block.find(class_=re.compile("reviewer-name--"))
+                        name = name_el.get_text(strip=True) if name_el else "購入者さん"
+                        
+                        # 4. タイトル
+                        title_el = block.find("div", class_=re.compile("type-header--"))
+                        title = title_el.get_text(strip=True) if title_el else ""
+                        
+                        # 5. 本文（本文がない「星のみ」のレビューも許容する）
+                        body_el = block.find(class_=["review-body--LpVR4", "no-ellipsis--2jV9-"])
+                        text = body_el.get_text(separator='\n', strip=True) if body_el else ""
+                        
+                        # 6. ショップからのコメント
+                        shop_comment_el = block.find(class_="shop-comment-body--3WU17")
+                        shop_comment = shop_comment_el.get_text(separator='\n', strip=True) if shop_comment_el else ""
+                        
+                        # 重複チェック用にデータをまとめる
+                        review_tuple = (date, rating, name, title, text)
+                        
+                        if review_tuple not in seen_reviews:
+                            seen_reviews.add(review_tuple)
+                            reviews.append({
+                                "投稿日": date,
+                                "評価": rating,
+                                "投稿者": name,
+                                "タイトル": title,
+                                "レビュー本文": text,
+                                "ショップからのコメント": shop_comment
+                            })
+                            new_reviews_count += 1
 
-                    # もし「新しいレビュー」が1件も無かったら、楽天のループ罠にハマったと判断して終了！
+                    # 新しいレビューが1件も見つからなければ終了
                     if new_reviews_count == 0:
                         break
                             
@@ -84,7 +111,7 @@ if st.button("データ収集開始"):
                     break
                     
                 progress_bar.progress(page / max_pages)
-                time.sleep(1) # 1ページごとに1秒休憩（重要）
+                time.sleep(1)
 
             # ==========================================
             # CSV出力とダウンロード
@@ -94,7 +121,7 @@ if st.button("データ収集開始"):
                 df = pd.DataFrame(reviews)
                 df.index = df.index + 1
                 
-                status_text.text(f"🎉 大成功です！！ 重複を除外し、計 {len(df)} 件のデータを収集しました！！")
+                status_text.text(f"🎉 大成功です！！ 隠されていたレビューも含め、計 {len(df)} 件のデータを収集しました！！")
                 st.dataframe(df)
                 
                 csv = df.to_csv().encode('utf-8-sig')
@@ -106,7 +133,7 @@ if st.button("データ収集開始"):
                     mime="text/csv"
                 )
             else:
-                st.warning("😢 ページにはアクセスできましたが、レビューの文章が見つかりませんでした。")
+                st.warning("😢 ページにはアクセスできましたが、レビューが見つかりませんでした。")
 
         except Exception as e:
             st.error(f"❌ 予期せぬエラーが発生しました: {e}")

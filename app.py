@@ -9,12 +9,11 @@ import re
 st.set_page_config(page_title="楽天レビュー完全収集ツール", page_icon="📊")
 
 st.title("📊 楽天レビュー完全収集ツール")
-st.write("楽天の「商品ページURL」または「レビュー一覧ページURL」を入力してください。全件一括収集します！")
+st.write("楽天の「レビュー一覧ページURL」を入力してください。新システムに対応した超強力版です！")
 
 # Step 1: URLを入力する枠
-input_url = st.text_input("ここにURLを貼り付けてください", placeholder="https://item.rakuten.co.jp/... または https://review.rakuten.co.jp/...")
+input_url = st.text_input("ここにURLを貼り付けてください", placeholder="https://review.rakuten.co.jp/item/1/...")
 
-# ボタンを押した時の動き
 if st.button("データ収集開始"):
     if not input_url:
         st.warning("⚠️ URLが入力されていません！")
@@ -27,38 +26,17 @@ if st.button("データ収集開始"):
         try:
             review_url_base = None
 
-            # ==========================================
-            # ルートA：最初から「レビュー専用URL」が入力された場合（直行ルート！）
-            # ==========================================
-            if "review.rakuten.co.jp/item/1/" in input_url:
-                match = re.search(r'(https://review\.rakuten\.co\.jp/item/1/\d+_\d+)', input_url)
-                if match:
-                    review_url_base = match.group(1)
-                    st.success("✅ レビュー専用URLを検知しました！直接データの収集を開始します。")
-                else:
-                    st.error("❌ レビューURLの形式が正しくありません。")
-                    st.stop()
-
-            # ==========================================
-            # ルートB：「商品ページURL」が入力された場合（探索ルート）
-            # ==========================================
+            # URLからベース部分を抽出
+            match = re.search(r'(https://review\.rakuten\.co\.jp/item/1/\d+_\d+)', input_url)
+            if match:
+                review_url_base = match.group(1)
+                st.success("✅ レビュー専用URLを検知しました！データの収集を開始します。")
             else:
-                with st.spinner("商品ページからレビューリンクを探索中..."):
-                    res = requests.get(input_url, headers=headers)
-                    html_text = res.text
-                    
-                    # どんな形でもいいから review.rakuten.co.jp のリンクを強制的に引っこ抜く最強の正規表現
-                    match = re.search(r'(https://review\.rakuten\.co\.jp/item/1/\d+_\d+)', html_text)
-                    
-                    if match:
-                        review_url_base = match.group(1)
-                        st.success("✅ 商品ページからレビューリンクの自動発見に成功しました！")
-                    else:
-                        st.error("❌ 楽天のセキュリティブロックにより、商品ページの裏側にアクセスできませんでした。\n\n💡 **【解決策】** ブラウザで商品の「レビューを見る」をクリックし、**レビュー一覧画面のURL（https://review.rakuten.co.jp/...）をコピーして、直接上の枠に貼り付けて**再度お試しください！")
-                        st.stop()
+                st.error("❌ レビューURLの形式が正しくありません。\n(例: https://review.rakuten.co.jp/item/1/12345_67890/1.1/)")
+                st.stop()
 
             # ==========================================
-            # データ収集処理（ルートA・B共通）
+            # データ収集処理（最新の楽天HTML構造に完全対応！）
             # ==========================================
             reviews = []
             max_pages = 50 # 最大50ページ（750件）まで自動で進む
@@ -74,17 +52,33 @@ if st.button("データ収集開始"):
                     res_p = requests.get(page_url, headers=headers)
                     soup_p = BeautifulSoup(res_p.content, "html.parser")
                     
-                    # 楽天の様々なページ構造に対応できる名札リスト
-                    review_elements = soup_p.find_all(class_=["revRvwUserEntryTxt", "rev-RvwText", "review-text"])
+                    # 新しい楽天のレビュー1件ごとのブロックを探す
+                    # ※ <li> タグの中にレビュー情報が入っている構造になっています
+                    review_blocks = soup_p.find_all('li')
                     
-                    # ページにレビューが1件も無くなったら終了！
-                    if not review_elements:
-                        break
+                    # 今回のページから取得できた件数（0なら終了）
+                    current_page_reviews = 0
+                    
+                    for block in review_blocks:
+                        # 1. レビュー本文を探す（いただいたHTMLの新クラス名）
+                        body_element = block.find(class_=["review-body--LpVR4", "no-ellipsis--2jV9-"])
                         
-                    for element in review_elements:
-                        text = element.get_text(strip=True)
-                        if text:
-                            reviews.append({"レビュー本文": text})
+                        if body_element:
+                            text = body_element.get_text(separator='\n', strip=True)
+                            
+                            # 2. ショップのコメントもついでに探す
+                            shop_comment_element = block.find(class_="shop-comment-body--3WU17")
+                            shop_comment = shop_comment_element.get_text(separator='\n', strip=True) if shop_comment_element else ""
+                            
+                            reviews.append({
+                                "レビュー本文": text,
+                                "ショップからのコメント": shop_comment
+                            })
+                            current_page_reviews += 1
+
+                    # ページにレビューが1件も無くなったら、最後のページまで到達したと判断して終了！
+                    if current_page_reviews == 0:
+                        break
                             
                 except Exception as e:
                     st.error(f"⚠️ ページ{page}の取得中にエラーが発生しました: {e}")
@@ -101,7 +95,7 @@ if st.button("データ収集開始"):
                 df = pd.DataFrame(reviews)
                 df.index = df.index + 1
                 
-                status_text.text(f"🎉 完了しました！ 計 {len(df)} 件のデータを収集しました！！")
+                status_text.text(f"🎉 大成功です！！ 計 {len(df)} 件のデータを収集しました！！")
                 st.dataframe(df)
                 
                 csv = df.to_csv().encode('utf-8-sig')
@@ -113,7 +107,7 @@ if st.button("データ収集開始"):
                     mime="text/csv"
                 )
             else:
-                st.warning("😢 ページにはアクセスできましたが、レビューの文章が見つかりませんでした。")
+                st.warning("😢 ページにはアクセスできましたが、レビューの文章が見つかりませんでした。（楽天の仕様がまた変更された可能性があります）")
 
         except Exception as e:
             st.error(f"❌ 予期せぬエラーが発生しました: {e}")

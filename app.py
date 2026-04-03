@@ -1,85 +1,60 @@
 import streamlit as st
 import requests
 from bs4 import BeautifulSoup
-import pandas as pd
-import time
 import re
 
-st.set_page_config(page_title="楽天レビュー完全収集ツール", page_icon="📊", layout="wide")
-st.title("📊 楽天レビュー完全収集ツール")
-st.write("新着順（全件表示モード）で41件すべてを確実に取得します！")
+st.set_page_config(page_title="楽天レビュー徹底解析", layout="wide")
+st.title("🕵️‍♂️ 楽天レビュー 徹底解析ツール")
+st.write("憶測をやめ、楽天のページ構造（プログラムからの見え方）を直接丸裸にします。")
 
-input_url = st.text_input("レビュー一覧URLを貼り付けてください", placeholder="https://review.rakuten.co.jp/item/1/...")
+input_url = st.text_input("レビュー一覧URLを貼り付けてください", value="https://review.rakuten.co.jp/item/1/355020_10000241/1.1/?l2-id=item_review")
 
-if st.button("データ収集開始"):
-    if not input_url:
-        st.warning("⚠️ URLを入力してください")
-    else:
+if st.button("ページを解析する"):
+    with st.spinner("ページの生データを取得中..."):
         headers = {
-            "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-            "Accept-Language": "ja-JP,ja;q=0.9",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
         }
+        res = requests.get(input_url, headers=headers)
+        soup = BeautifulSoup(res.content, "html.parser")
+        
+        st.write("---")
+        
+        # 【調査1】純粋にこのページから何件のテキストが見つかるか
+        st.subheader("1. この1ページ目から取得できたレビュー数")
+        review_elements = soup.find_all(class_=re.compile(r"review-body|no-ellipsis|revRvwUserEntryTxt"))
+        st.write(f"👉 **{len(review_elements)} 件** のテキスト要素が見つかりました。（通常は15件のはずです）")
+        
+        # 【調査2】ページ送りのURLがどうなっているか
+        st.subheader("2. 「次へ」や「2ページ目」のリンク（超重要）")
+        st.write("プログラムが2ページ目に進むための正しいURLを探します。")
+        page_links = set()
+        for a in soup.find_all('a', href=True):
+            href = a['href']
+            # ページ番号っぽいリンクを抽出
+            if "review.rakuten.co.jp" in href and re.search(r'\d\.\d', href):
+                text = a.get_text(strip=True)
+                if text: # 文字があるボタンだけ
+                    page_links.add((text, href))
+        
+        if page_links:
+            for text, link in page_links:
+                st.code(f"ボタン文字: [{text}]\nURL: {link}")
+        else:
+            st.warning("⚠️ ページ送りのリンクが見つかりません！（URLが変わらないSPA方式の可能性があります）")
 
-        try:
-            match = re.search(r'item/1/(\d+_\d+)', input_url)
-            if not match:
-                st.error("❌ 正しいURLを入力してください")
-                st.stop()
-            
-            item_id = match.group(1)
-            reviews = []
-            seen_texts = set()
-
-            progress_bar = st.progress(0)
-            status_text = st.empty()
-
-            # 最大10ページ（150件）まで探索範囲を広げます
-            for page in range(1, 11):
-                # 💡【ここが最重要修正！】 1.{page} を 6.{page} に変更
-                # これで「おすすめ順（30件制限）」を回避し、「新着順（全件）」で取得します
-                page_url = f"https://review.rakuten.co.jp/item/1/{item_id}/6.{page}/"
-                
-                status_text.text(f"🏃‍♂️ 全件モードで取得中... ページ {page} (現在 {len(reviews)}件)")
-                
-                try:
-                    res = requests.get(page_url, headers=headers, timeout=10)
-                    soup = BeautifulSoup(res.content, "html.parser")
-                    
-                    # より広い範囲でレビュー本文をキャッチする設定
-                    candidates = soup.find_all(['div', 'span', 'p'], class_=re.compile(r"review-body|revRvwUserEntryTxt|no-ellipsis|rev-RvwText"))
-                    
-                    found_on_page = 0
-                    for el in candidates:
-                        text = el.get_text(strip=True)
-                        if len(text) > 5 and text not in seen_texts:
-                            # ボタン文字などのゴミを除去
-                            if any(x in text for x in ["レビューを書く", "並び替え", "ショップからのコメント"]):
-                                continue
-                                
-                            seen_texts.add(text)
-                            reviews.append({"番号": len(reviews)+1, "レビュー本文": text})
-                            found_on_page += 1
-
-                    if found_on_page == 0:
-                        break
-                            
-                except Exception:
+        # 【調査3】隠しデータ（JSON）が埋まっていないか
+        st.subheader("3. 隠されたデータ（JSON / APIの代わり）の有無")
+        st.write("最新のWebサイトは、HTMLの中に全件のデータを『暗号のような文字の塊（JSON）』として隠し持っていることがあります。")
+        json_found = False
+        for script in soup.find_all('script'):
+            content = script.string
+            if content and ('__NEXT_DATA__' in content or 'window.__' in content or '"review"' in content):
+                # 怪しいスクリプトを発見したらプレビュー表示
+                if len(content) > 1000:
+                    st.success("🎯 大量にデータが詰まった隠しスクリプトを発見しました！")
+                    st.text_area("データの一部プレビュー", content[:1500] + "\n\n... (省略)", height=200)
+                    json_found = True
                     break
-                    
-                progress_bar.progress(min(page / 10, 1.0))
-                time.sleep(1.5)
-
-            if len(reviews) > 0:
-                progress_bar.progress(1.0)
-                df = pd.DataFrame(reviews)
-                st.success(f"🎉 ついに全件攻略！ {len(df)} 件のレビューを取得しました！")
-                st.dataframe(df, use_container_width=True)
-                
-                csv = df.to_csv(index=False).encode('utf-8-sig')
-                st.download_button("📥 CSVファイルをダウンロード", data=csv, file_name="rakuten_reviews_all.csv")
-            else:
-                st.error("❗ レビューが取得できませんでした。")
-
-        except Exception as e:
-            st.error(f"❌ エラー: {e}")
+        
+        if not json_found:
+            st.info("隠しデータは見つかりませんでした。純粋なHTMLのようです。")
